@@ -53,7 +53,9 @@ tokio = { workspace = true, features = [
 tokio-stream.workspace = true
 
 # Optimism
-reth-optimism-consensus = { workspace = true, features = ["optimism"] }
+reth-optimism-consensus = { workspace = true, optional = true, features = [
+    "optimism",
+] }
 
 ## misc
 aquamarine.workspace = true
@@ -73,5 +75,5 @@ optimism = [
     "reth-beacon-consensus/optimism",
     "reth-blockchain-tree/optimism",
     "reth-node-core/optimism",
-    "reth-optimism-consensus/optimism",
+    "dep:reth-optimism-consensus",
 ]
