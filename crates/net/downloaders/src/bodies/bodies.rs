@@ -31,11 +31,11 @@ use tracing::info;
 /// All blocks in a batch are fetched at the same time.
 #[must_use = "Stream does nothing unless polled"]
 #[derive(Debug)]
-pub struct BodiesDownloader<B: BodiesClient, Provider> {
+pub struct BodiesDownloader<B: BodiesClient, Cons: Consensus, Provider> {
     /// The bodies client
     client: Arc<B>,
     /// The consensus client
-    consensus: Arc<dyn Consensus>,
+    consensus: Cons,
     /// The database handle
     provider: Provider,
     /// The maximum number of non-empty blocks per one request
@@ -53,7 +53,7 @@ pub struct BodiesDownloader<B: BodiesClient, Provider> {
     /// The latest block number returned.
     latest_queued_block_number: Option<BlockNumber>,
     /// Requests in progress
-    in_progress_queue: BodiesRequestQueue<B>,
+    in_progress_queue: BodiesRequestQueue<B, Cons>,
     /// Buffered responses
     buffered_responses: BinaryHeap<OrderedBodiesResponse>,
     /// Queued body responses that can be returned for insertion into the database.
@@ -62,9 +62,10 @@ pub struct BodiesDownloader<B: BodiesClient, Provider> {
     metrics: BodyDownloaderMetrics,
 }
 
-impl<B, Provider> BodiesDownloader<B, Provider>
+impl<B, Cons, Provider> BodiesDownloader<B, Cons, Provider>
 where
     B: BodiesClient + 'static,
+    Cons: Consensus + 'static,
     Provider: HeaderProvider + Unpin + 'static,
 {
     /// Returns the next contiguous request.
@@ -276,9 +277,10 @@ where
     }
 }
 
-impl<B, Provider> BodiesDownloader<B, Provider>
+impl<B, Cons, Provider> BodiesDownloader<B, Cons, Provider>
 where
     B: BodiesClient + 'static,
+    Cons: Consensus,
     Provider: HeaderProvider + Unpin + 'static,
     Self: BodyDownloader + 'static,
 {
@@ -296,9 +298,10 @@ where
     }
 }
 
-impl<B, Provider> BodyDownloader for BodiesDownloader<B, Provider>
+impl<B, Cons, Provider> BodyDownloader for BodiesDownloader<B, Cons, Provider>
 where
     B: BodiesClient + 'static,
+    Cons: Consensus + Clone + Unpin + 'static,
     Provider: HeaderProvider + Unpin + 'static,
 {
     /// Set a new download range (exclusive).
@@ -344,9 +347,10 @@ where
     }
 }
 
-impl<B, Provider> Stream for BodiesDownloader<B, Provider>
+impl<B, Cons, Provider> Stream for BodiesDownloader<B, Cons, Provider>
 where
     B: BodiesClient + 'static,
+    Cons: Consensus + Clone + Unpin + 'static,
     Provider: HeaderProvider + Unpin + 'static,
 {
     type Item = BodyDownloaderResult;
@@ -387,7 +391,7 @@ where
                         this.metrics.in_flight_requests.increment(1.);
                         this.in_progress_queue.push_new_request(
                             Arc::clone(&this.client),
-                            Arc::clone(&this.consensus),
+                            this.consensus.clone(),
                             request,
                         );
                         new_request_submitted = true;
@@ -559,14 +563,15 @@ impl BodiesDownloaderBuilder {
     }
 
     /// Consume self and return the concurrent downloader.
-    pub fn build<B, Provider>(
+    pub fn build<B, C, Provider>(
         self,
         client: B,
-        consensus: Arc<dyn Consensus>,
+        consensus: C,
         provider: Provider,
-    ) -> BodiesDownloader<B, Provider>
+    ) -> BodiesDownloader<B, C, Provider>
     where
         B: BodiesClient + 'static,
+        C: Consensus + 'static,
         Provider: HeaderProvider,
     {
         let Self {

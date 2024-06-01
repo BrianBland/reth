@@ -64,9 +64,9 @@ impl From<HeadersResponseError> for ReverseHeadersDownloaderError {
 /// towards the local head: falling block numbers.
 #[must_use = "Stream does nothing unless polled"]
 #[derive(Debug)]
-pub struct ReverseHeadersDownloader<H: HeadersClient> {
+pub struct ReverseHeadersDownloader<H: HeadersClient, C: Consensus> {
     /// Consensus client used to validate headers
-    consensus: Arc<dyn Consensus>,
+    consensus: C,
     /// Client used to download headers.
     client: Arc<H>,
     /// The local head of the chain.
@@ -108,9 +108,10 @@ pub struct ReverseHeadersDownloader<H: HeadersClient> {
 
 // === impl ReverseHeadersDownloader ===
 
-impl<H> ReverseHeadersDownloader<H>
+impl<H, C> ReverseHeadersDownloader<H, C>
 where
     H: HeadersClient + 'static,
+    C: Consensus + 'static,
 {
     /// Convenience method to create a [`ReverseHeadersDownloaderBuilder`] without importing it
     pub fn builder() -> ReverseHeadersDownloaderBuilder {
@@ -628,9 +629,10 @@ where
     }
 }
 
-impl<H> ReverseHeadersDownloader<H>
+impl<H, C> ReverseHeadersDownloader<H, C>
 where
     H: HeadersClient,
+    C: Consensus + 'static,
     Self: HeaderDownloader + 'static,
 {
     /// Spawns the downloader task via [`tokio::task::spawn`]
@@ -647,9 +649,10 @@ where
     }
 }
 
-impl<H> HeaderDownloader for ReverseHeadersDownloader<H>
+impl<H, C> HeaderDownloader for ReverseHeadersDownloader<H, C>
 where
     H: HeadersClient + 'static,
+    C: Consensus + Unpin + 'static,
 {
     fn update_local_head(&mut self, head: SealedHeader) {
         // ensure we're only yielding headers that are in range and follow the current local head.
@@ -733,9 +736,10 @@ where
     }
 }
 
-impl<H> Stream for ReverseHeadersDownloader<H>
+impl<H, C> Stream for ReverseHeadersDownloader<H, C>
 where
     H: HeadersClient + 'static,
+    C: Consensus + Unpin + 'static,
 {
     type Item = HeadersDownloaderResult<Vec<SealedHeader>>;
 
@@ -1151,9 +1155,10 @@ impl ReverseHeadersDownloaderBuilder {
 
     /// Build [`ReverseHeadersDownloader`] with provided consensus
     /// and header client implementations
-    pub fn build<H>(self, client: H, consensus: Arc<dyn Consensus>) -> ReverseHeadersDownloader<H>
+    pub fn build<H, C>(self, client: H, consensus: C) -> ReverseHeadersDownloader<H, C>
     where
         H: HeadersClient + 'static,
+        C: Consensus + 'static,
     {
         let Self {
             request_limit,

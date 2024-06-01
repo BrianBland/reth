@@ -24,7 +24,7 @@ pub use validation::validate_block_post_execution;
 /// Ethereum beacon consensus
 ///
 /// This consensus engine does basic checks as outlined in the execution specs.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct EthBeaconConsensus {
     /// Configuration
     chain_spec: Arc<ChainSpec>,

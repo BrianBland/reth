@@ -17,18 +17,19 @@ use std::{
 /// The wrapper around [`FuturesUnordered`] that keeps information
 /// about the blocks currently being requested.
 #[derive(Debug)]
-pub(crate) struct BodiesRequestQueue<B: BodiesClient> {
+pub(crate) struct BodiesRequestQueue<B: BodiesClient, Cons: Consensus> {
     /// Inner body request queue.
-    inner: FuturesUnordered<BodiesRequestFuture<B>>,
+    inner: FuturesUnordered<BodiesRequestFuture<B, Cons>>,
     /// The downloader metrics.
     metrics: BodyDownloaderMetrics,
     /// Last requested block number.
     pub(crate) last_requested_block_number: Option<BlockNumber>,
 }
 
-impl<B> BodiesRequestQueue<B>
+impl<B, Cons> BodiesRequestQueue<B, Cons>
 where
     B: BodiesClient + 'static,
+    Cons: Consensus + 'static,
 {
     /// Create new instance of request queue.
     pub(crate) fn new(metrics: BodyDownloaderMetrics) -> Self {
@@ -56,7 +57,7 @@ where
     pub(crate) fn push_new_request(
         &mut self,
         client: Arc<B>,
-        consensus: Arc<dyn Consensus>,
+        consensus: Cons,
         request: Vec<SealedHeader>,
     ) {
         // Set last max requested block number
@@ -74,9 +75,10 @@ where
     }
 }
 
-impl<B> Stream for BodiesRequestQueue<B>
+impl<B, Cons> Stream for BodiesRequestQueue<B, Cons>
 where
     B: BodiesClient + 'static,
+    Cons: Consensus + Unpin + 'static,
 {
     type Item = DownloadResult<Vec<BlockResponse>>;
 

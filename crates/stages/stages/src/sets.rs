@@ -71,9 +71,9 @@ use std::sync::Arc;
 /// - [`IndexAccountHistoryStage`]
 /// - [`FinishStage`]
 #[derive(Debug)]
-pub struct DefaultStages<Provider, H, B, EF> {
+pub struct DefaultStages<Provider, C, H, B, EF> {
     /// Configuration for the online stages
-    online: OnlineStages<Provider, H, B>,
+    online: OnlineStages<Provider, C, H, B>,
     /// Executor factory needs for execution stage
     executor_factory: EF,
     /// Configuration for each stage in the pipeline
@@ -82,13 +82,13 @@ pub struct DefaultStages<Provider, H, B, EF> {
     prune_modes: PruneModes,
 }
 
-impl<Provider, H, B, E> DefaultStages<Provider, H, B, E> {
+impl<Provider, C, H, B, E> DefaultStages<Provider, C, H, B, E> {
     /// Create a new set of default stages with default values.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         provider: Provider,
         header_mode: HeaderSyncMode,
-        consensus: Arc<dyn Consensus>,
+        consensus: C,
         header_downloader: H,
         body_downloader: B,
         executor_factory: E,
@@ -114,7 +114,7 @@ impl<Provider, H, B, E> DefaultStages<Provider, H, B, E> {
     }
 }
 
-impl<Provider, H, B, E> DefaultStages<Provider, H, B, E>
+impl<Provider, H, C, B, E> DefaultStages<Provider, H, C, B, E>
 where
     E: BlockExecutorProvider,
 {
@@ -132,10 +132,11 @@ where
     }
 }
 
-impl<Provider, H, B, E, DB> StageSet<DB> for DefaultStages<Provider, H, B, E>
+impl<Provider, H, C, B, E, DB> StageSet<DB> for DefaultStages<Provider, C, H, B, E>
 where
     Provider: HeaderSyncGapProvider + 'static,
     H: HeaderDownloader + 'static,
+    C: Consensus + 'static,
     B: BodyDownloader + 'static,
     E: BlockExecutorProvider,
     DB: Database + 'static,
@@ -155,13 +156,13 @@ where
 /// These stages *can* be run without network access if the specified downloaders are
 /// themselves offline.
 #[derive(Debug)]
-pub struct OnlineStages<Provider, H, B> {
+pub struct OnlineStages<Provider, C, H, B> {
     /// Sync gap provider for the headers stage.
     provider: Provider,
     /// The sync mode for the headers stage.
     header_mode: HeaderSyncMode,
     /// The consensus engine used to validate incoming data.
-    consensus: Arc<dyn Consensus>,
+    consensus: C,
     /// The block header downloader
     header_downloader: H,
     /// The block body downloader
@@ -170,12 +171,12 @@ pub struct OnlineStages<Provider, H, B> {
     stages_config: StageConfig,
 }
 
-impl<Provider, H, B> OnlineStages<Provider, H, B> {
+impl<Provider, C, H, B> OnlineStages<Provider, C, H, B> {
     /// Create a new set of online stages with default values.
     pub fn new(
         provider: Provider,
         header_mode: HeaderSyncMode,
-        consensus: Arc<dyn Consensus>,
+        consensus: C,
         header_downloader: H,
         body_downloader: B,
         stages_config: StageConfig,
@@ -184,15 +185,16 @@ impl<Provider, H, B> OnlineStages<Provider, H, B> {
     }
 }
 
-impl<Provider, H, B> OnlineStages<Provider, H, B>
+impl<Provider, C, H, B> OnlineStages<Provider, C, H, B>
 where
     Provider: HeaderSyncGapProvider + 'static,
+    C: Consensus + 'static,
     H: HeaderDownloader + 'static,
     B: BodyDownloader + 'static,
 {
     /// Create a new builder using the given headers stage.
     pub fn builder_with_headers<DB: Database>(
-        headers: HeaderStage<Provider, H>,
+        headers: HeaderStage<Provider, C, H>,
         body_downloader: B,
     ) -> StageSetBuilder<DB> {
         StageSetBuilder::default().add_stage(headers).add_stage(BodyStage::new(body_downloader))
@@ -219,10 +221,11 @@ where
     }
 }
 
-impl<DB, Provider, H, B> StageSet<DB> for OnlineStages<Provider, H, B>
+impl<DB, Provider, C, H, B> StageSet<DB> for OnlineStages<Provider, C, H, B>
 where
     DB: Database,
     Provider: HeaderSyncGapProvider + 'static,
+    C: Consensus + 'static,
     H: HeaderDownloader + 'static,
     B: BodyDownloader + 'static,
 {
@@ -232,7 +235,7 @@ where
                 self.provider,
                 self.header_downloader,
                 self.header_mode,
-                self.consensus.clone(),
+                self.consensus,
                 self.stages_config.etl.clone(),
             ))
             .add_stage(BodyStage::new(self.body_downloader))

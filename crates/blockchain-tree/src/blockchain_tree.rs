@@ -55,13 +55,13 @@ use tracing::{debug, error, info, instrument, trace, warn};
 /// * [`BlockchainTree::make_canonical`]: Check if we have the hash of a block that is the current
 ///   canonical head and commit it to db.
 #[derive(Debug)]
-pub struct BlockchainTree<DB, E> {
+pub struct BlockchainTree<DB, C, E> {
     /// The state of the tree
     ///
     /// Tracks all the chains, the block indices, and the block buffer.
     state: TreeState,
     /// External components (the database, consensus engine etc.)
-    externals: TreeExternals<DB, E>,
+    externals: TreeExternals<DB, C, E>,
     /// Tree configuration
     config: BlockchainTreeConfig,
     /// Prune modes.
@@ -74,7 +74,7 @@ pub struct BlockchainTree<DB, E> {
     metrics: TreeMetrics,
 }
 
-impl<DB, E> BlockchainTree<DB, E> {
+impl<DB, C, E> BlockchainTree<DB, C, E> {
     /// Subscribe to new blocks events.
     ///
     /// Note: Only canonical blocks are emitted by the tree.
@@ -88,9 +88,10 @@ impl<DB, E> BlockchainTree<DB, E> {
     }
 }
 
-impl<DB, E> BlockchainTree<DB, E>
+impl<DB, C, E> BlockchainTree<DB, C, E>
 where
     DB: Database + Clone,
+    C: Consensus,
     E: BlockExecutorProvider,
 {
     /// Builds the blockchain tree for the node.
@@ -114,7 +115,7 @@ where
     ///   storage space efficiently. It's important to validate this configuration to ensure it does
     ///   not lead to unintended data loss.
     pub fn new(
-        externals: TreeExternals<DB, E>,
+        externals: TreeExternals<DB, C, E>,
         config: BlockchainTreeConfig,
         prune_modes: Option<PruneModes>,
     ) -> ProviderResult<Self> {
@@ -1404,7 +1405,7 @@ mod tests {
 
     fn setup_externals(
         exec_res: Vec<BundleStateWithReceipts>,
-    ) -> TreeExternals<Arc<TempDatabase<DatabaseEnv>>, MockExecutorProvider> {
+    ) -> TreeExternals<Arc<TempDatabase<DatabaseEnv>>, TestConsensus, MockExecutorProvider> {
         let chain_spec = Arc::new(
             ChainSpecBuilder::default()
                 .chain(MAINNET.chain)
@@ -1413,7 +1414,7 @@ mod tests {
                 .build(),
         );
         let provider_factory = create_test_provider_factory_with_chain_spec(chain_spec);
-        let consensus = Arc::new(TestConsensus::default());
+        let consensus = TestConsensus::default();
         let executor_factory = MockExecutorProvider::default();
         executor_factory.extend(exec_res);
 
@@ -1498,7 +1499,10 @@ mod tests {
             self
         }
 
-        fn assert<DB: Database, E: BlockExecutorProvider>(self, tree: &BlockchainTree<DB, E>) {
+        fn assert<DB: Database, C: Consensus, E: BlockExecutorProvider>(
+            self,
+            tree: &BlockchainTree<DB, C, E>,
+        ) {
             if let Some(chain_num) = self.chain_num {
                 assert_eq!(tree.state.chains.len(), chain_num);
             }

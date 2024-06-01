@@ -43,7 +43,7 @@ use tracing::*;
 /// proceeds to push them sequentially to static files. The stage checkpoint is not updated until
 /// this stage is done.
 #[derive(Debug)]
-pub struct HeaderStage<Provider, Downloader: HeaderDownloader> {
+pub struct HeaderStage<Provider, Cons: Consensus, Downloader: HeaderDownloader> {
     /// Database handle.
     provider: Provider,
     /// Strategy for downloading the headers
@@ -51,7 +51,7 @@ pub struct HeaderStage<Provider, Downloader: HeaderDownloader> {
     /// The sync mode for the stage.
     mode: HeaderSyncMode,
     /// Consensus client implementation
-    consensus: Arc<dyn Consensus>,
+    consensus: Cons,
     /// Current sync gap.
     sync_gap: Option<HeaderSyncGap>,
     /// ETL collector with `HeaderHash` -> `BlockNumber`
@@ -64,8 +64,9 @@ pub struct HeaderStage<Provider, Downloader: HeaderDownloader> {
 
 // === impl HeaderStage ===
 
-impl<Provider, Downloader> HeaderStage<Provider, Downloader>
+impl<Provider, Cons, Downloader> HeaderStage<Provider, Cons, Downloader>
 where
+    Cons: Consensus,
     Downloader: HeaderDownloader,
 {
     /// Create a new header stage
@@ -73,7 +74,7 @@ where
         database: Provider,
         downloader: Downloader,
         mode: HeaderSyncMode,
-        consensus: Arc<dyn Consensus>,
+        consensus: Cons,
         etl_config: EtlConfig,
     ) -> Self {
         Self {
@@ -186,10 +187,11 @@ where
     }
 }
 
-impl<DB, Provider, D> Stage<DB> for HeaderStage<Provider, D>
+impl<DB, Provider, C, D> Stage<DB> for HeaderStage<Provider, C, D>
 where
     DB: Database,
     Provider: HeaderSyncGapProvider,
+    C: Consensus,
     D: HeaderDownloader,
 {
     /// Return the id of the stage
@@ -407,7 +409,7 @@ mod tests {
             channel: (watch::Sender<B256>, watch::Receiver<B256>),
             downloader_factory: Box<dyn Fn() -> D + Send + Sync + 'static>,
             db: TestStageDB,
-            consensus: Arc<TestConsensus>,
+            consensus: TestConsensus,
         }
 
         impl Default for HeadersTestRunner<TestHeaderDownloader> {
@@ -416,7 +418,7 @@ mod tests {
                 Self {
                     client: client.clone(),
                     channel: watch::channel(B256::ZERO),
-                    consensus: Arc::new(TestConsensus::default()),
+                    consensus: TestConsensus::default(),
                     downloader_factory: Box::new(move || {
                         TestHeaderDownloader::new(
                             client.clone(),
@@ -431,7 +433,7 @@ mod tests {
         }
 
         impl<D: HeaderDownloader + 'static> StageTestRunner for HeadersTestRunner<D> {
-            type S = HeaderStage<ProviderFactory<Arc<TempDatabase<DatabaseEnv>>>, D>;
+            type S = HeaderStage<ProviderFactory<Arc<TempDatabase<DatabaseEnv>>>, TestConsensus, D>;
 
             fn db(&self) -> &TestStageDB {
                 &self.db
@@ -442,7 +444,7 @@ mod tests {
                     self.db.factory.clone(),
                     (*self.downloader_factory)(),
                     HeaderSyncMode::Tip(self.channel.1.clone()),
-                    self.consensus.clone(),
+                    TestConsensus::default(),
                     EtlConfig::default(),
                 )
             }
@@ -530,7 +532,7 @@ mod tests {
             }
         }
 
-        impl HeadersTestRunner<ReverseHeadersDownloader<TestHeadersClient>> {
+        impl HeadersTestRunner<ReverseHeadersDownloader<TestHeadersClient, TestConsensus>> {
             pub(crate) fn with_linear_downloader() -> Self {
                 let client = TestHeadersClient::default();
                 Self {
@@ -539,10 +541,10 @@ mod tests {
                     downloader_factory: Box::new(move || {
                         ReverseHeadersDownloaderBuilder::default()
                             .stream_batch_size(500)
-                            .build(client.clone(), Arc::new(TestConsensus::default()))
+                            .build(client.clone(), TestConsensus::default())
                     }),
                     db: TestStageDB::default(),
-                    consensus: Arc::new(TestConsensus::default()),
+                    consensus: TestConsensus::default(),
                 }
             }
         }

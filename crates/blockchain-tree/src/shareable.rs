@@ -7,6 +7,7 @@ use reth_blockchain_tree_api::{
     BlockValidationKind, BlockchainTreeEngine, BlockchainTreeViewer, CanonicalOutcome,
     InsertPayloadOk,
 };
+use reth_consensus::Consensus;
 use reth_db_api::database::Database;
 use reth_evm::execute::BlockExecutorProvider;
 use reth_primitives::{
@@ -22,21 +23,22 @@ use tracing::trace;
 
 /// Shareable blockchain tree that is behind a `RwLock`
 #[derive(Clone, Debug)]
-pub struct ShareableBlockchainTree<DB, E> {
+pub struct ShareableBlockchainTree<DB, C, E> {
     /// `BlockchainTree`
-    pub tree: Arc<RwLock<BlockchainTree<DB, E>>>,
+    pub tree: Arc<RwLock<BlockchainTree<DB, C, E>>>,
 }
 
-impl<DB, E> ShareableBlockchainTree<DB, E> {
+impl<DB, C, E> ShareableBlockchainTree<DB, C, E> {
     /// Create a new shareable database.
-    pub fn new(tree: BlockchainTree<DB, E>) -> Self {
+    pub fn new(tree: BlockchainTree<DB, C, E>) -> Self {
         Self { tree: Arc::new(RwLock::new(tree)) }
     }
 }
 
-impl<DB, E> BlockchainTreeEngine for ShareableBlockchainTree<DB, E>
+impl<DB, C, E> BlockchainTreeEngine for ShareableBlockchainTree<DB, C, E>
 where
     DB: Database + Clone,
+    C: Consensus,
     E: BlockExecutorProvider,
 {
     fn buffer_block(&self, block: SealedBlockWithSenders) -> Result<(), InsertBlockError> {
@@ -103,9 +105,10 @@ where
     }
 }
 
-impl<DB, E> BlockchainTreeViewer for ShareableBlockchainTree<DB, E>
+impl<DB, C, E> BlockchainTreeViewer for ShareableBlockchainTree<DB, C, E>
 where
     DB: Database + Clone,
+    C: Consensus,
     E: BlockExecutorProvider,
 {
     fn header_by_hash(&self, hash: BlockHash) -> Option<SealedHeader> {
@@ -166,9 +169,10 @@ where
     }
 }
 
-impl<DB, E> BlockchainTreePendingStateProvider for ShareableBlockchainTree<DB, E>
+impl<DB, C, E> BlockchainTreePendingStateProvider for ShareableBlockchainTree<DB, C, E>
 where
     DB: Database + Clone,
+    C: Consensus,
     E: BlockExecutorProvider,
 {
     fn find_pending_state_provider(
@@ -181,9 +185,10 @@ where
     }
 }
 
-impl<DB, E> CanonStateSubscriptions for ShareableBlockchainTree<DB, E>
+impl<DB, C, E> CanonStateSubscriptions for ShareableBlockchainTree<DB, C, E>
 where
     DB: Send + Sync,
+    C: Consensus,
     E: Send + Sync,
 {
     fn subscribe_to_canonical_state(&self) -> reth_provider::CanonStateNotifications {

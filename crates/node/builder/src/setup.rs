@@ -27,11 +27,11 @@ use tokio::sync::watch;
 
 /// Constructs a [Pipeline] that's wired to the network
 #[allow(clippy::too_many_arguments)]
-pub async fn build_networked_pipeline<DB, Client, Executor>(
+pub async fn build_networked_pipeline<DB, Client, Cons, Executor>(
     node_config: &NodeConfig,
     config: &StageConfig,
     client: Client,
-    consensus: Arc<dyn Consensus>,
+    consensus: Cons,
     provider_factory: ProviderFactory<DB>,
     task_executor: &TaskExecutor,
     metrics_tx: reth_stages::MetricEventsSender,
@@ -44,15 +44,16 @@ pub async fn build_networked_pipeline<DB, Client, Executor>(
 where
     DB: Database + Unpin + Clone + 'static,
     Client: HeadersClient + BodiesClient + Clone + 'static,
+    Cons: Consensus + Unpin + Clone + 'static,
     Executor: BlockExecutorProvider,
 {
     // building network downloaders using the fetch client
     let header_downloader = ReverseHeadersDownloaderBuilder::new(config.headers)
-        .build(client.clone(), Arc::clone(&consensus))
+        .build(client.clone(), consensus.clone())
         .into_task_with(task_executor);
 
     let body_downloader = BodiesDownloaderBuilder::new(config.bodies)
-        .build(client, Arc::clone(&consensus), provider_factory.clone())
+        .build(client, consensus.clone(), provider_factory.clone())
         .into_task_with(task_executor);
 
     let pipeline = build_pipeline(
@@ -76,13 +77,13 @@ where
 
 /// Builds the [Pipeline] with the given [`ProviderFactory`] and downloaders.
 #[allow(clippy::too_many_arguments)]
-pub async fn build_pipeline<DB, H, B, Executor>(
+pub async fn build_pipeline<DB, H, B, C, Executor>(
     node_config: &NodeConfig,
     provider_factory: ProviderFactory<DB>,
     stage_config: &StageConfig,
     header_downloader: H,
     body_downloader: B,
-    consensus: Arc<dyn Consensus>,
+    consensus: C,
     max_block: Option<u64>,
     metrics_tx: reth_stages::MetricEventsSender,
     prune_config: Option<PruneConfig>,
@@ -94,6 +95,7 @@ where
     DB: Database + Clone + 'static,
     H: HeaderDownloader + 'static,
     B: BodyDownloader + 'static,
+    C: Consensus + 'static,
     Executor: BlockExecutorProvider,
 {
     let mut builder = Pipeline::builder();
@@ -119,7 +121,7 @@ where
             DefaultStages::new(
                 provider_factory.clone(),
                 header_mode,
-                Arc::clone(&consensus),
+                consensus,
                 header_downloader,
                 body_downloader,
                 executor.clone(),

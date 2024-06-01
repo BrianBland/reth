@@ -117,20 +117,6 @@ where
                 info!(target: "reth::cli", "\n{}", this.chain_spec().display_hardforks());
             });
 
-        // setup the consensus instance
-        let consensus: Arc<dyn Consensus> = if ctx.is_dev() {
-            Arc::new(AutoSealConsensus::new(ctx.chain_spec()))
-        } else {
-            #[cfg(feature = "optimism")]
-            if ctx.chain_spec().is_optimism() {
-                Arc::new(OptimismBeaconConsensus::new(ctx.chain_spec()))
-            } else {
-                Arc::new(EthBeaconConsensus::new(ctx.chain_spec()))
-            }
-            #[cfg(not(feature = "optimism"))]
-            Arc::new(EthBeaconConsensus::new(ctx.chain_spec()))
-        };
-
         debug!(target: "reth::cli", "Spawning stages metrics listener task");
         let (sync_metrics_tx, sync_metrics_rx) = unbounded_channel();
         let sync_metrics_listener = reth_stages::MetricsListener::new(sync_metrics_rx);
@@ -166,7 +152,7 @@ where
 
         let tree_externals = TreeExternals::new(
             ctx.provider_factory().clone(),
-            consensus.clone(),
+            components.consensus().clone(),
             components.block_executor().clone(),
         );
         let tree = BlockchainTree::new(tree_externals, tree_config, ctx.prune_modes())?
@@ -318,7 +304,7 @@ where
                 ctx.node_config(),
                 &ctx.toml_config().stages,
                 client.clone(),
-                Arc::clone(&consensus),
+                node_adapter.components.consensus().clone(),
                 ctx.provider_factory().clone(),
                 ctx.task_executor(),
                 sync_metrics_tx,
@@ -341,7 +327,7 @@ where
                 ctx.node_config(),
                 &ctx.toml_config().stages,
                 network_client.clone(),
-                Arc::clone(&consensus),
+                node_adapter.components.consensus().clone(),
                 ctx.provider_factory().clone(),
                 ctx.task_executor(),
                 sync_metrics_tx,

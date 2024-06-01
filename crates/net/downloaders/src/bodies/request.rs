@@ -35,9 +35,9 @@ use std::{
 /// All errors regarding the response cause the peer to get penalized, meaning that adversaries
 /// that try to give us bodies that do not match the requested order are going to be penalized
 /// and eventually disconnected.
-pub(crate) struct BodiesRequestFuture<B: BodiesClient> {
+pub(crate) struct BodiesRequestFuture<B: BodiesClient, Cons: Consensus> {
     client: Arc<B>,
-    consensus: Arc<dyn Consensus>,
+    consensus: Cons,
     metrics: BodyDownloaderMetrics,
     /// Metrics for individual responses. This can be used to observe how the size (in bytes) of
     /// responses change while bodies are being downloaded.
@@ -51,16 +51,13 @@ pub(crate) struct BodiesRequestFuture<B: BodiesClient> {
     last_request_len: Option<usize>,
 }
 
-impl<B> BodiesRequestFuture<B>
+impl<B, Cons> BodiesRequestFuture<B, Cons>
 where
     B: BodiesClient + 'static,
+    Cons: Consensus + 'static,
 {
     /// Returns an empty future. Use [`BodiesRequestFuture::with_headers`] to set the request.
-    pub(crate) fn new(
-        client: Arc<B>,
-        consensus: Arc<dyn Consensus>,
-        metrics: BodyDownloaderMetrics,
-    ) -> Self {
+    pub(crate) fn new(client: Arc<B>, consensus: Cons, metrics: BodyDownloaderMetrics) -> Self {
         Self {
             client,
             consensus,
@@ -204,9 +201,10 @@ where
     }
 }
 
-impl<B> Future for BodiesRequestFuture<B>
+impl<B, Cons> Future for BodiesRequestFuture<B, Cons>
 where
     B: BodiesClient + 'static,
+    Cons: Consensus + Unpin + 'static,
 {
     type Output = DownloadResult<Vec<BlockResponse>>;
 
