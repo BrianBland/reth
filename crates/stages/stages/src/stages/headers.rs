@@ -25,10 +25,7 @@ use reth_stages_api::{
     BlockErrorKind, ExecInput, ExecOutput, Stage, StageError, UnwindInput, UnwindOutput,
 };
 use reth_storage_errors::provider::ProviderError;
-use std::{
-    sync::Arc,
-    task::{ready, Context, Poll},
-};
+use std::task::{ready, Context, Poll};
 use tracing::*;
 
 /// The headers stage.
@@ -390,6 +387,7 @@ mod tests {
     };
     use reth_testing_utils::generators::{self, random_header, random_header_range};
     use reth_trie::{updates::TrieUpdates, HashedPostState};
+    use std::sync::Arc;
     use test_runner::HeadersTestRunner;
 
     mod test_runner {
@@ -409,7 +407,6 @@ mod tests {
             channel: (watch::Sender<B256>, watch::Receiver<B256>),
             downloader_factory: Box<dyn Fn() -> D + Send + Sync + 'static>,
             db: TestStageDB,
-            consensus: TestConsensus,
         }
 
         impl Default for HeadersTestRunner<TestHeaderDownloader> {
@@ -418,7 +415,6 @@ mod tests {
                 Self {
                     client: client.clone(),
                     channel: watch::channel(B256::ZERO),
-                    consensus: TestConsensus::default(),
                     downloader_factory: Box::new(move || {
                         TestHeaderDownloader::new(
                             client.clone(),
@@ -544,7 +540,6 @@ mod tests {
                             .build(client.clone(), TestConsensus::default())
                     }),
                     db: TestStageDB::default(),
-                    consensus: TestConsensus::default(),
                 }
             }
         }

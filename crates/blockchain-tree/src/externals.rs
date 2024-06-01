@@ -28,7 +28,11 @@ pub struct TreeExternals<DB, C, E> {
 
 impl<DB, C, E> TreeExternals<DB, C, E> {
     /// Create new tree externals.
-    pub fn new(provider_factory: ProviderFactory<DB>, consensus: C, executor_factory: E) -> Self {
+    pub const fn new(
+        provider_factory: ProviderFactory<DB>,
+        consensus: C,
+        executor_factory: E,
+    ) -> Self {
         Self { provider_factory, consensus, executor_factory }
     }
 }

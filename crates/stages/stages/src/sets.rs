@@ -173,7 +173,7 @@ pub struct OnlineStages<Provider, C, H, B> {
 
 impl<Provider, C, H, B> OnlineStages<Provider, C, H, B> {
     /// Create a new set of online stages with default values.
-    pub fn new(
+    pub const fn new(
         provider: Provider,
         header_mode: HeaderSyncMode,
         consensus: C,

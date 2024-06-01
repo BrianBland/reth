@@ -260,8 +260,8 @@ where
 
     /// Configures the consensus builder.
     ///
-    /// This accepts a [ConsensusBuilder] instance that will be used to create the node's components
-    /// for consensus.
+    /// This accepts a [`ConsensusBuilder`] instance that will be used to create the node's
+    /// components for consensus.
     pub fn consensus<CB>(
         self,
         consensus_builder: CB,

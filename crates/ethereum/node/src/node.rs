@@ -1,7 +1,6 @@
 //! Ethereum Node types config.
 
 use crate::{EthEngineTypes, EthEvmConfig};
-use reth_auto_seal_consensus::AutoSealConsensus;
 use reth_basic_payload_builder::{BasicPayloadJobGenerator, BasicPayloadJobGeneratorConfig};
 use reth_beacon_consensus::EthBeaconConsensus;
 use reth_evm_ethereum::execute::EthExecutorProvider;

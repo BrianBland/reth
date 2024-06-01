@@ -291,6 +291,7 @@ where
 
 /// A basic optimism consensus builder.
 #[derive(Debug, Default, Clone)]
+#[non_exhaustive]
 pub struct OptimismConsensusBuilder;
 
 impl<Node> ConsensusBuilder<Node> for OptimismConsensusBuilder

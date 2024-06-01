@@ -143,7 +143,6 @@ optimism = [
     "reth-beacon-consensus/optimism",
     "reth-blockchain-tree/optimism",
     "dep:reth-node-optimism",
-    "reth-node-builder/optimism",
     "reth-node-core/optimism",
 ]
 
