@@ -16,26 +16,6 @@ fn main() {
     use reth::cli::Cli;
     use reth_node_ethereum::EthereumNode;
 
-    use reth_auto_seal_consensus::AutoSealConsensus;
-    use reth_node_builder::{components::ConsensusBuilder, node::FullNodeTypes, BuilderContext};
-
-    #[derive(Debug, Clone, Copy)]
-    struct DevConsensusBuilder;
-
-    impl<Node> ConsensusBuilder<Node> for DevConsensusBuilder
-    where
-        Node: FullNodeTypes,
-    {
-        type Consensus = AutoSealConsensus;
-
-        async fn build_consensus(
-            self,
-            ctx: &BuilderContext<Node>,
-        ) -> eyre::Result<Self::Consensus> {
-            Ok(AutoSealConsensus::new(ctx.chain_spec()))
-        }
-    }
-
     reth::sigsegv_handler::install();
 
     // Enable backtraces unless a RUST_BACKTRACE value has already been explicitly provided.
@@ -44,18 +24,8 @@ fn main() {
     }
 
     if let Err(err) = Cli::parse_args().run(|builder, _| async {
-        let is_dev_mode = builder.config().dev.dev;
-        if is_dev_mode {
-            let handle = builder
-                .with_types::<EthereumNode>()
-                .with_components(EthereumNode::components().consensus(DevConsensusBuilder))
-                .launch()
-                .await?;
-            handle.node_exit_future.await
-        } else {
-            let handle = builder.launch_node(EthereumNode::default()).await?;
-            handle.node_exit_future.await
-        }
+        let handle = builder.launch_node(EthereumNode::default()).await?;
+        handle.node_exit_future.await
     }) {
         eprintln!("Error: {err:?}");
         std::process::exit(1);

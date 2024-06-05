@@ -1,6 +1,7 @@
 //! Ethereum Node types config.
 
 use crate::{EthEngineTypes, EthEvmConfig};
+use reth_auto_seal_consensus::AutoSealConsensus;
 use reth_basic_payload_builder::{BasicPayloadJobGenerator, BasicPayloadJobGeneratorConfig};
 use reth_beacon_consensus::EthBeaconConsensus;
 use reth_evm_ethereum::execute::EthExecutorProvider;
@@ -20,6 +21,7 @@ use reth_transaction_pool::{
     blobstore::DiskFileBlobStore, EthTransactionPool, TransactionPool,
     TransactionValidationTaskExecutor,
 };
+use std::sync::Arc;
 
 /// Type configuration for a regular Ethereum node.
 #[derive(Debug, Default, Clone, Copy)]
@@ -243,9 +245,13 @@ impl<Node> ConsensusBuilder<Node> for EthereumConsensusBuilder
 where
     Node: FullNodeTypes,
 {
-    type Consensus = EthBeaconConsensus;
+    type Consensus = Arc<dyn reth_consensus::Consensus>;
 
     async fn build_consensus(self, ctx: &BuilderContext<Node>) -> eyre::Result<Self::Consensus> {
-        Ok(EthBeaconConsensus::new(ctx.chain_spec()))
+        if ctx.is_dev() {
+            Ok(Arc::new(AutoSealConsensus::new(ctx.chain_spec())))
+        } else {
+            Ok(Arc::new(EthBeaconConsensus::new(ctx.chain_spec())))
+        }
     }
 }

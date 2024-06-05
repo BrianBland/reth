@@ -23,6 +23,8 @@ reth-transaction-pool.workspace = true
 reth-network.workspace = true
 reth-evm-ethereum.workspace = true
 reth-beacon-consensus.workspace = true
+reth-consensus.workspace = true
+reth-auto-seal-consensus.workspace = true
 
 # misc
 eyre.workspace = true
