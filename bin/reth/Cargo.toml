@@ -26,7 +26,6 @@ reth-revm.workspace = true
 reth-stages.workspace = true
 reth-errors.workspace = true
 reth-transaction-pool.workspace = true
-reth-auto-seal-consensus.workspace = true
 reth-beacon-consensus.workspace = true
 reth-cli-runner.workspace = true
 reth-consensus-common.workspace = true
