@@ -12,7 +12,7 @@ use alloy_primitives::{BlockTimestamp, B256};
 use alloy_rpc_types::engine::PayloadId;
 use futures_util::{future::FutureExt, Stream, StreamExt};
 use reth_chain_state::CanonStateNotification;
-use reth_execution_cache::SavedCache;
+use reth_execution_cache::{SavedCache, TxPoolPrewarmCacheSnapshot};
 use reth_payload_builder_primitives::{Events, PayloadBuilderError, PayloadEvents};
 use reth_payload_primitives::{BuiltPayload, PayloadAttributes, PayloadKind, PayloadTypes};
 use reth_primitives_traits::{FastInstant as Instant, NodePrimitives};
@@ -582,6 +582,8 @@ pub struct PayloadBuilderResources {
     ///
     /// Only provided if `--engine.share-execution-cache-with-payload-builder` is enabled.
     execution_cache: Option<SavedCache>,
+    /// Latest completed txpool-prewarm snapshot for the payload's parent state.
+    txpool_snapshot: Option<TxPoolPrewarmCacheSnapshot>,
     /// Optional handle to a background state-root task.
     state_root_handle: Option<PayloadStateRootHandle>,
     /// Lifecycle leases retained by the service or by detached payload build tasks.
@@ -594,7 +596,16 @@ impl PayloadBuilderResources {
         execution_cache: Option<SavedCache>,
         state_root_handle: Option<PayloadStateRootHandle>,
     ) -> Self {
-        Self { execution_cache, state_root_handle, leases: Vec::new() }
+        Self { execution_cache, txpool_snapshot: None, state_root_handle, leases: Vec::new() }
+    }
+
+    /// Adds a txpool-prewarm snapshot for this payload's parent state.
+    pub fn with_txpool_snapshot(
+        mut self,
+        txpool_snapshot: Option<TxPoolPrewarmCacheSnapshot>,
+    ) -> Self {
+        self.txpool_snapshot = txpool_snapshot;
+        self
     }
 
     /// Adds a lease for this payload build.
@@ -611,6 +622,16 @@ impl PayloadBuilderResources {
     /// Takes the loaned execution cache, if any.
     pub const fn take_execution_cache(&mut self) -> Option<SavedCache> {
         self.execution_cache.take()
+    }
+
+    /// Returns the txpool-prewarm snapshot, if one was ready for this payload's parent state.
+    pub const fn txpool_snapshot(&self) -> Option<&TxPoolPrewarmCacheSnapshot> {
+        self.txpool_snapshot.as_ref()
+    }
+
+    /// Takes the txpool-prewarm snapshot, if one was ready for this payload's parent state.
+    pub const fn take_txpool_snapshot(&mut self) -> Option<TxPoolPrewarmCacheSnapshot> {
+        self.txpool_snapshot.take()
     }
 
     /// Returns the loaned state-root task handle, if any.

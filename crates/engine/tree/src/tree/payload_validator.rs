@@ -1915,7 +1915,9 @@ where
         // the txpool prewarm when dropped.
         if let Some(txpool_prewarm) = self.txpool_prewarm.as_ref() {
             let txpool_lease = PayloadBuilderLease::new(txpool_prewarm.pause());
-            resources = resources.with_lease(txpool_lease);
+            resources = resources
+                .with_txpool_snapshot(txpool_prewarm.snapshot(parent_hash))
+                .with_lease(txpool_lease);
         }
         resources
     }
