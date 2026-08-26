@@ -394,6 +394,8 @@ pub enum CachedStateMetricsSource {
     Engine,
     /// Payload builder.
     Builder,
+    /// Dowse hint-driven payload prewarming.
+    Dowse,
     /// Tests.
     #[cfg(any(test, feature = "test-utils"))]
     Test,
@@ -404,6 +406,7 @@ impl fmt::Display for CachedStateMetricsSource {
         match self {
             Self::Engine => f.write_str("engine"),
             Self::Builder => f.write_str("builder"),
+            Self::Dowse => f.write_str("dowse"),
             #[cfg(any(test, feature = "test-utils"))]
             Self::Test => f.write_str("test"),
         }
