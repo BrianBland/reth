@@ -4,7 +4,6 @@ use crate::{
     pool::pending::PendingTransaction,
     PoolTransaction, Priority, TransactionOrdering, ValidPoolTransaction,
 };
-use alloy_consensus::Transaction;
 use alloy_primitives::map::AddressSet;
 use core::fmt;
 use imbl::OrdMap;
@@ -14,6 +13,20 @@ use std::{
     collections::{BTreeSet, VecDeque},
     sync::Arc,
 };
+
+/// Returns whether `transaction` pays at least the given base fee and, for EIP-4844 transactions,
+/// blob fee.
+fn satisfies_fees<T: PoolTransaction>(
+    transaction: &ValidPoolTransaction<T>,
+    base_fee: u64,
+    base_fee_per_blob_gas: u64,
+) -> bool {
+    transaction.transaction.max_fee_per_gas() >= base_fee as u128 &&
+        transaction
+            .transaction
+            .max_fee_per_blob_gas()
+            .is_none_or(|fee| fee >= base_fee_per_blob_gas as u128)
+}
 use tokio::sync::broadcast::{error::TryRecvError, Receiver};
 use tracing::debug;
 
@@ -32,7 +45,37 @@ pub(crate) struct BestTransactionsWithFees<T: TransactionOrdering> {
     pub(crate) base_fee_per_blob_gas: u64,
 }
 
+impl<T: TransactionOrdering> BestTransactionsWithFees<T> {
+    /// Returns the next transaction that satisfies the fees, consuming the ones `skip` claims.
+    ///
+    /// Only transactions that satisfy the fees reach `skip`: an underpriced transaction is marked
+    /// invalid exactly as by [`Iterator::next`].
+    fn next_with_fees(
+        &mut self,
+        mut skip: impl FnMut(&Arc<ValidPoolTransaction<T::Transaction>>) -> bool,
+    ) -> Option<Arc<ValidPoolTransaction<T::Transaction>>> {
+        let (base_fee, base_fee_per_blob_gas) = (self.base_fee, self.base_fee_per_blob_gas);
+        loop {
+            let (best, _) = self.best.next_unskipped(|transaction| {
+                satisfies_fees(transaction, base_fee, base_fee_per_blob_gas) && skip(transaction)
+            })?;
+            if satisfies_fees(&best, base_fee, base_fee_per_blob_gas) {
+                return Some(best);
+            }
+            crate::traits::BestTransactions::mark_invalid(
+                self,
+                &best,
+                InvalidPoolTransactionError::Underpriced,
+            );
+        }
+    }
+}
+
 impl<T: TransactionOrdering> crate::traits::BestTransactions for BestTransactionsWithFees<T> {
+    fn next_skipping(&mut self, skip: &mut dyn FnMut(&Self::Item) -> bool) -> Option<Self::Item> {
+        self.next_with_fees(skip)
+    }
+
     fn mark_invalid(&mut self, tx: &Self::Item, kind: InvalidPoolTransactionError) {
         BestTransactions::mark_invalid(&mut self.best, tx, kind)
     }
@@ -58,24 +101,7 @@ impl<T: TransactionOrdering> Iterator for BestTransactionsWithFees<T> {
     type Item = Arc<ValidPoolTransaction<T::Transaction>>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        // find the next transaction that satisfies the base fee
-        loop {
-            let best = Iterator::next(&mut self.best)?;
-            // If both the base fee and blob fee (if applicable for EIP-4844) are satisfied, return
-            // the transaction
-            if best.transaction.max_fee_per_gas() >= self.base_fee as u128 &&
-                best.transaction
-                    .max_fee_per_blob_gas()
-                    .is_none_or(|fee| fee >= self.base_fee_per_blob_gas as u128)
-            {
-                return Some(best);
-            }
-            crate::traits::BestTransactions::mark_invalid(
-                self,
-                &best,
-                InvalidPoolTransactionError::Underpriced,
-            );
-        }
+        self.next_with_fees(|_| false)
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
@@ -91,16 +117,86 @@ impl<T: TransactionOrdering> Iterator for BestTransactionsWithFees<T> {
 /// be executed on the current state, but only yields transactions that are ready to be executed
 /// now. While it contains all gapless transactions of a sender, it _always_ only returns the
 /// transaction with the current on chain nonce.
+/// The transactions a [`BestTransactions`] iterator can yield right away, popped highest first.
+///
+/// This behaves exactly like a `BTreeSet` of them: inserting a transaction already contained is a
+/// no-op. The pool snapshot is sorted once into a vector that is consumed from its end, so only
+/// transactions inserted later, which unlocks and live updates produce, pay for tree upkeep.
+#[derive(Debug)]
+pub(crate) struct IndependentTransactions<T: TransactionOrdering> {
+    /// Snapshot transactions in ascending order, unique.
+    sorted: Vec<PendingTransaction<T>>,
+    /// Transactions inserted after the snapshot that `sorted` does not contain.
+    inserted: BTreeSet<PendingTransaction<T>>,
+}
+
+impl<T: TransactionOrdering> IndependentTransactions<T> {
+    /// Returns the number of contained transactions.
+    #[cfg(test)]
+    pub(crate) fn len(&self) -> usize {
+        self.sorted.len() + self.inserted.len()
+    }
+
+    /// Returns whether `transaction` is contained.
+    #[cfg(test)]
+    pub(crate) fn contains(&self, transaction: &PendingTransaction<T>) -> bool {
+        self.sorted.binary_search(transaction).is_ok() || self.inserted.contains(transaction)
+    }
+
+    /// Iterates over the contained transactions in no particular order.
+    #[cfg(test)]
+    pub(crate) fn iter(&self) -> impl Iterator<Item = &PendingTransaction<T>> {
+        self.sorted.iter().chain(&self.inserted)
+    }
+
+    /// Adds `transaction` unless it is already contained.
+    pub(crate) fn insert(&mut self, transaction: PendingTransaction<T>) {
+        if self.sorted.binary_search(&transaction).is_err() {
+            self.inserted.insert(transaction);
+        }
+    }
+
+    /// Removes and returns the greatest transaction.
+    pub(crate) fn pop_last(&mut self) -> Option<PendingTransaction<T>> {
+        match (self.sorted.last(), self.inserted.last()) {
+            (Some(sorted), Some(inserted)) if inserted > sorted => self.inserted.pop_last(),
+            (Some(_), _) => self.sorted.pop(),
+            (None, _) => self.inserted.pop_last(),
+        }
+    }
+}
+
+impl<T: TransactionOrdering> FromIterator<PendingTransaction<T>> for IndependentTransactions<T> {
+    fn from_iter<I: IntoIterator<Item = PendingTransaction<T>>>(iter: I) -> Self {
+        let mut sorted: Vec<_> = iter.into_iter().collect();
+        sorted.sort_unstable();
+        sorted.dedup();
+        Self { sorted, inserted: BTreeSet::new() }
+    }
+}
+
+/// An iterator that returns transactions that can be executed on the current state (*best*
+/// transactions).
+///
+/// The [`PendingPool`](crate::pool::pending::PendingPool) contains transactions that *could* all
+/// be executed on the current state, but only yields transactions that are ready to be executed
+/// now. While it contains all gapless transactions of a sender, it _always_ only returns the
+/// transaction with the current on chain nonce.
 #[derive(Debug)]
 pub struct BestTransactions<T: TransactionOrdering> {
     /// Contains a copy of _all_ transactions of the pending pool at the point in time this
-    /// iterator was created.
+    /// iterator was created, plus later updates.
+    ///
+    /// Ids in `popped` are no longer part of it: they are left in this map, whose removals are
+    /// expensive copy-on-write updates of the shared snapshot, and ignored by every lookup.
     pub(crate) all: OrdMap<TransactionId, PendingTransaction<T>>,
+    /// Ids of `all` whose transaction this iterator has popped since it was last inserted.
+    pub(crate) popped: FxHashSet<TransactionId>,
     /// Transactions that can be executed right away: these have the expected nonce.
     ///
     /// Once an `independent` transaction with the nonce `N` is returned, it unlocks `N+1`, which
     /// then can be moved from the `all` set to the `independent` set.
-    pub(crate) independent: BTreeSet<PendingTransaction<T>>,
+    pub(crate) independent: IndependentTransactions<T>,
     /// There might be the case where a yielded transactions is invalid, this will track it.
     pub(crate) invalid: FxHashSet<SenderId>,
     /// Used to receive any new pending transactions that have been added to the pool after this
@@ -129,12 +225,23 @@ impl<T: TransactionOrdering> BestTransactions<T> {
         self.invalid.insert(tx.sender_id());
     }
 
+    /// Returns the transaction with the given id that has not been popped.
+    fn get(&self, id: &TransactionId) -> Option<&PendingTransaction<T>> {
+        self.all.get(id).filter(|_| !self.popped.contains(id))
+    }
+
+    /// Adds a transaction to `all`, replacing any transaction with its id.
+    fn insert(&mut self, id: TransactionId, transaction: PendingTransaction<T>) {
+        self.all.insert(id, transaction);
+        self.popped.remove(&id);
+    }
+
     /// Returns the ancestor the given transaction, the transaction with `nonce - 1`.
     ///
     /// Note: for a transaction with nonce higher than the current on chain nonce this will always
     /// return an ancestor since all transactions in this pool are gapless.
     pub(crate) fn ancestor(&self, id: &TransactionId) -> Option<&PendingTransaction<T>> {
-        self.all.get(&id.unchecked_ancestor()?)
+        self.get(&id.unchecked_ancestor()?)
     }
 
     /// Non-blocking read on the new pending transactions subscription channel
@@ -173,7 +280,7 @@ impl<T: TransactionOrdering> BestTransactions<T> {
     /// set.
     fn pop_best(&mut self) -> Option<PendingTransaction<T>> {
         self.independent.pop_last().inspect(|best| {
-            self.all.remove(best.transaction.id());
+            self.popped.insert(*best.transaction.id());
         })
     }
 
@@ -190,11 +297,11 @@ impl<T: TransactionOrdering> BestTransactions<T> {
                         if self.ancestor(&tx_id).is_none() {
                             self.independent.insert(tx.clone());
                         }
-                        self.all.insert(tx_id, tx);
+                        self.insert(tx_id, tx);
                     }
                     IncomingTransaction::Stash(tx) => {
                         let tx_id = *tx.transaction.id();
-                        self.all.insert(tx_id, tx);
+                        self.insert(tx_id, tx);
                     }
                 }
             } else {
@@ -207,6 +314,20 @@ impl<T: TransactionOrdering> BestTransactions<T> {
     #[expect(clippy::type_complexity)]
     pub fn next_tx_and_priority(
         &mut self,
+    ) -> Option<(Arc<ValidPoolTransaction<T::Transaction>>, Priority<T::PriorityValue>)> {
+        self.next_unskipped(|_| false)
+    }
+
+    /// Returns the next best transaction and its priority value, consuming without returning
+    /// every transaction `skip` claims.
+    ///
+    /// `skip` sees each transaction exactly when it would be returned. A claimed transaction is
+    /// treated as returned, including the priority bound it sets for live updates, and the
+    /// iterator moves on as a following call of [`Self::next_tx_and_priority`] would.
+    #[expect(clippy::type_complexity)]
+    fn next_unskipped(
+        &mut self,
+        mut skip: impl FnMut(&Arc<ValidPoolTransaction<T::Transaction>>) -> bool,
     ) -> Option<(Arc<ValidPoolTransaction<T::Transaction>>, Priority<T::PriorityValue>)> {
         loop {
             self.add_new_transactions();
@@ -225,7 +346,7 @@ impl<T: TransactionOrdering> BestTransactions<T> {
             }
 
             // Insert transactions that just got unlocked.
-            if let Some(unlocked) = self.all.get(&best.unlocks()) {
+            if let Some(unlocked) = self.get(&best.unlocks()) {
                 self.independent.insert(unlocked.clone());
             }
 
@@ -241,6 +362,9 @@ impl<T: TransactionOrdering> BestTransactions<T> {
             } else {
                 if self.new_transaction_receiver.is_some() {
                     self.last_priority = Some(best.priority.clone())
+                }
+                if skip(&best.transaction) {
+                    continue
                 }
                 return Some((best.transaction, best.priority))
             }
@@ -276,6 +400,10 @@ enum IncomingTransaction<T: TransactionOrdering> {
 }
 
 impl<T: TransactionOrdering> crate::traits::BestTransactions for BestTransactions<T> {
+    fn next_skipping(&mut self, skip: &mut dyn FnMut(&Self::Item) -> bool) -> Option<Self::Item> {
+        self.next_unskipped(skip).map(|(tx, _)| tx)
+    }
+
     fn mark_invalid(&mut self, tx: &Self::Item, kind: InvalidPoolTransactionError) {
         Self::mark_invalid(self, tx, kind)
     }
@@ -306,7 +434,7 @@ impl<T: TransactionOrdering> Iterator for BestTransactions<T> {
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
-        (0, self.new_transaction_receiver.is_none().then_some(self.all.len()))
+        (0, self.new_transaction_receiver.is_none().then_some(self.all.len() - self.popped.len()))
     }
 }
 
@@ -482,6 +610,9 @@ where
 }
 
 #[cfg(test)]
+mod exactness_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::{
@@ -489,6 +620,7 @@ mod tests {
         test_utils::{MockOrdering, MockTransaction, MockTransactionFactory},
         BestTransactions, Priority,
     };
+    use alloy_consensus::Transaction;
 
     #[test]
     fn test_best_iter() {
