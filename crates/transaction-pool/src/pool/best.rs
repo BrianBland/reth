@@ -13,6 +13,10 @@ use std::{
     collections::{BTreeSet, VecDeque},
     sync::Arc,
 };
+use tokio::sync::broadcast::{error::TryRecvError, Receiver};
+use tracing::debug;
+
+const MAX_NEW_TRANSACTIONS_PER_BATCH: usize = 16;
 
 /// Returns whether `transaction` pays at least the given base fee and, for EIP-4844 transactions,
 /// blob fee.
@@ -27,10 +31,6 @@ fn satisfies_fees<T: PoolTransaction>(
             .max_fee_per_blob_gas()
             .is_none_or(|fee| fee >= base_fee_per_blob_gas as u128)
 }
-use tokio::sync::broadcast::{error::TryRecvError, Receiver};
-use tracing::debug;
-
-const MAX_NEW_TRANSACTIONS_PER_BATCH: usize = 16;
 
 /// An iterator that returns transactions that can be executed on the current state (*best*
 /// transactions).
@@ -117,71 +117,6 @@ impl<T: TransactionOrdering> Iterator for BestTransactionsWithFees<T> {
 /// be executed on the current state, but only yields transactions that are ready to be executed
 /// now. While it contains all gapless transactions of a sender, it _always_ only returns the
 /// transaction with the current on chain nonce.
-/// The transactions a [`BestTransactions`] iterator can yield right away, popped highest first.
-///
-/// This behaves exactly like a `BTreeSet` of them: inserting a transaction already contained is a
-/// no-op. The pool snapshot is sorted once into a vector that is consumed from its end, so only
-/// transactions inserted later, which unlocks and live updates produce, pay for tree upkeep.
-#[derive(Debug)]
-pub(crate) struct IndependentTransactions<T: TransactionOrdering> {
-    /// Snapshot transactions in ascending order, unique.
-    sorted: Vec<PendingTransaction<T>>,
-    /// Transactions inserted after the snapshot that `sorted` does not contain.
-    inserted: BTreeSet<PendingTransaction<T>>,
-}
-
-impl<T: TransactionOrdering> IndependentTransactions<T> {
-    /// Returns the number of contained transactions.
-    #[cfg(test)]
-    pub(crate) fn len(&self) -> usize {
-        self.sorted.len() + self.inserted.len()
-    }
-
-    /// Returns whether `transaction` is contained.
-    #[cfg(test)]
-    pub(crate) fn contains(&self, transaction: &PendingTransaction<T>) -> bool {
-        self.sorted.binary_search(transaction).is_ok() || self.inserted.contains(transaction)
-    }
-
-    /// Iterates over the contained transactions in no particular order.
-    #[cfg(test)]
-    pub(crate) fn iter(&self) -> impl Iterator<Item = &PendingTransaction<T>> {
-        self.sorted.iter().chain(&self.inserted)
-    }
-
-    /// Adds `transaction` unless it is already contained.
-    pub(crate) fn insert(&mut self, transaction: PendingTransaction<T>) {
-        if self.sorted.binary_search(&transaction).is_err() {
-            self.inserted.insert(transaction);
-        }
-    }
-
-    /// Removes and returns the greatest transaction.
-    pub(crate) fn pop_last(&mut self) -> Option<PendingTransaction<T>> {
-        match (self.sorted.last(), self.inserted.last()) {
-            (Some(sorted), Some(inserted)) if inserted > sorted => self.inserted.pop_last(),
-            (Some(_), _) => self.sorted.pop(),
-            (None, _) => self.inserted.pop_last(),
-        }
-    }
-}
-
-impl<T: TransactionOrdering> FromIterator<PendingTransaction<T>> for IndependentTransactions<T> {
-    fn from_iter<I: IntoIterator<Item = PendingTransaction<T>>>(iter: I) -> Self {
-        let mut sorted: Vec<_> = iter.into_iter().collect();
-        sorted.sort_unstable();
-        sorted.dedup();
-        Self { sorted, inserted: BTreeSet::new() }
-    }
-}
-
-/// An iterator that returns transactions that can be executed on the current state (*best*
-/// transactions).
-///
-/// The [`PendingPool`](crate::pool::pending::PendingPool) contains transactions that *could* all
-/// be executed on the current state, but only yields transactions that are ready to be executed
-/// now. While it contains all gapless transactions of a sender, it _always_ only returns the
-/// transaction with the current on chain nonce.
 #[derive(Debug)]
 pub struct BestTransactions<T: TransactionOrdering> {
     /// Contains a copy of _all_ transactions of the pending pool at the point in time this
@@ -196,7 +131,7 @@ pub struct BestTransactions<T: TransactionOrdering> {
     ///
     /// Once an `independent` transaction with the nonce `N` is returned, it unlocks `N+1`, which
     /// then can be moved from the `all` set to the `independent` set.
-    pub(crate) independent: IndependentTransactions<T>,
+    pub(crate) independent: BTreeSet<PendingTransaction<T>>,
     /// There might be the case where a yielded transactions is invalid, this will track it.
     pub(crate) invalid: FxHashSet<SenderId>,
     /// Used to receive any new pending transactions that have been added to the pool after this

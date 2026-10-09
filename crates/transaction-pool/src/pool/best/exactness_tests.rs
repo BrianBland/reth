@@ -1,9 +1,9 @@
 //! Randomized differential tests pinning the exact behavior of [`BestTransactions`].
 //!
 //! `ReferenceBestTransactions` is a verbatim copy of the iterator before popped transactions became
-//! tombstones and the independent set became [`IndependentTransactions`]; the new iterator must
-//! match it pop for pop. [`crate::traits::BestTransactions::next_skipping`] must match a caller
-//! that receives each claimed transaction from `next` and asks again.
+//! tombstones; the new iterator must match it pop for pop.
+//! [`crate::traits::BestTransactions::next_skipping`] must match a caller that receives each
+//! claimed transaction from `next` and asks again.
 
 use super::*;
 use crate::{
@@ -260,7 +260,7 @@ fn identity(item: Option<(Tx, Priority<u128>)>) -> Option<(TxHash, u64)> {
     item.map(|(tx, _)| (*tx.hash(), tx.nonce()))
 }
 
-/// The tombstone and sorted-vector iterator pops exactly what the fork-point iterator pops under
+/// The tombstone iterator pops exactly what the fork-point iterator pops under
 /// random scripts of pops, invalidations, blob skipping and live updates, including replacements
 /// of popped and unpopped ids, repeats and batches beyond one update round.
 #[test]
