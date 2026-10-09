@@ -1326,6 +1326,28 @@ impl<T: TransactionOrdering> TxPool<T> {
 }
 
 #[cfg(any(test, feature = "test-utils"))]
+impl<T: TransactionOrdering> TxPool<T> {
+    /// Adds a validated transaction from a sender with an unlimited balance whose on-chain nonce
+    /// is `on_chain_nonce`, as the pool does once validation succeeds.
+    pub fn add_validated_transaction(
+        &mut self,
+        tx: ValidPoolTransaction<T::Transaction>,
+        on_chain_nonce: u64,
+    ) -> PoolResult<()> {
+        self.add_transaction(tx, U256::MAX, on_chain_nonce, None).map(drop)
+    }
+
+    /// Returns the snapshot the pool serves to a payload builder for `attributes`.
+    pub fn best_with_attributes(
+        &self,
+        attributes: BestTransactionsAttributes,
+    ) -> Box<dyn crate::traits::BestTransactions<Item = Arc<ValidPoolTransaction<T::Transaction>>>>
+    {
+        self.best_transactions_with_attributes(attributes)
+    }
+}
+
+#[cfg(any(test, feature = "test-utils"))]
 impl TxPool<crate::test_utils::MockOrdering> {
     /// Creates a mock instance for testing.
     pub fn mock() -> Self {

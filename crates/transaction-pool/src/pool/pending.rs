@@ -309,29 +309,6 @@ impl<T: TransactionOrdering> PendingPool<T> {
         self.by_id.insert(tx_id, tx);
     }
 
-    /// The snapshot the pool serves for payload attributes whose base fee is above this pool's
-    /// pending base fee, so tests outside this crate can drive the fee-checked iterator.
-    #[cfg(any(test, feature = "test-utils"))]
-    pub fn best_with_higher_base_fee(
-        &self,
-        base_fee: u64,
-    ) -> impl crate::traits::BestTransactions<Item = Arc<ValidPoolTransaction<T::Transaction>>> + use<T>
-    {
-        self.best_with_basefee_and_blobfee(base_fee, 0)
-    }
-
-    /// Replaces the transaction with the same id the way the pool replaces a pending transaction,
-    /// so live best iterators receive the replacement as a new pending transaction.
-    #[cfg(any(test, feature = "test-utils"))]
-    pub fn replace_transaction(
-        &mut self,
-        tx: Arc<ValidPoolTransaction<T::Transaction>>,
-        base_fee: u64,
-    ) {
-        self.remove_transaction(tx.id());
-        self.add_transaction(tx, base_fee);
-    }
-
     /// Removes the transaction from the pool.
     ///
     /// Note: If the transaction has a descendant transaction
