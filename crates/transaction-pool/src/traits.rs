@@ -1112,6 +1112,21 @@ pub trait BestTransactions: Iterator + Send {
     /// depend on it.
     fn mark_invalid(&mut self, transaction: &Self::Item, kind: InvalidPoolTransactionError);
 
+    /// Returns the next transaction, consuming without returning every transaction `skip` claims.
+    ///
+    /// An implementation passes `skip` each transaction exactly when it would return it. When
+    /// `skip` returns `true`, the implementation treats the transaction as returned and moves on
+    /// exactly as a following call of [`Iterator::next`] would, so a caller that claims a
+    /// transaction observes the same sequence and iterator state as one that received it from
+    /// [`Iterator::next`] and asked again. `skip` may therefore commit the caller's own handling of
+    /// a claimed transaction before returning `true`.
+    ///
+    /// The default implementation never calls `skip` and returns [`Iterator::next`].
+    fn next_skipping(&mut self, skip: &mut dyn FnMut(&Self::Item) -> bool) -> Option<Self::Item> {
+        let _ = skip;
+        self.next()
+    }
+
     /// An iterator may be able to receive additional pending transactions that weren't present it
     /// the pool when it was created.
     ///
@@ -1180,6 +1195,10 @@ impl<T> BestTransactions for Box<T>
 where
     T: BestTransactions + ?Sized,
 {
+    fn next_skipping(&mut self, skip: &mut dyn FnMut(&Self::Item) -> bool) -> Option<Self::Item> {
+        (**self).next_skipping(skip)
+    }
+
     fn mark_invalid(&mut self, transaction: &Self::Item, kind: InvalidPoolTransactionError) {
         (**self).mark_invalid(transaction, kind)
     }
