@@ -309,6 +309,18 @@ impl<T: TransactionOrdering> PendingPool<T> {
         self.by_id.insert(tx_id, tx);
     }
 
+    /// Replaces the transaction with the same id the way the pool replaces a pending transaction,
+    /// so live best iterators receive the replacement as a new pending transaction.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn replace_transaction(
+        &mut self,
+        tx: Arc<ValidPoolTransaction<T::Transaction>>,
+        base_fee: u64,
+    ) {
+        self.remove_transaction(tx.id());
+        self.add_transaction(tx, base_fee);
+    }
+
     /// Removes the transaction from the pool.
     ///
     /// Note: If the transaction has a descendant transaction
