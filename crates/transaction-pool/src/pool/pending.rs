@@ -104,6 +104,9 @@ impl<T: TransactionOrdering> PendingPool<T> {
     pub fn best(&self) -> BestTransactions<T> {
         BestTransactions {
             all: self.by_id.clone(),
+            yielded: Default::default(),
+            max_yielded: self.by_id.len(),
+            replaced: false,
             independent: self.independent_transactions.values().cloned().collect(),
             invalid: Default::default(),
             new_transaction_receiver: Some(self.new_transaction_notifier.subscribe()),

@@ -96,6 +96,18 @@ pub struct BestTransactions<T: TransactionOrdering> {
     /// Contains a copy of _all_ transactions of the pending pool at the point in time this
     /// iterator was created.
     pub(crate) all: OrdMap<TransactionId, PendingTransaction<T>>,
+    /// Transactions in `all` that were already yielded, and so are logically removed.
+    ///
+    /// `all` is a structural-sharing clone of the pool, so removing from it copies the path to
+    /// each removed entry. Tombstoning yielded ids here keeps `all` unmodified on the hot path.
+    pub(crate) yielded: FxHashSet<TransactionId>,
+    /// Number of tombstones in `yielded` above which they are removed from `all` in bulk: the
+    /// size of the snapshot. Draining the snapshot never removes anything, while an iterator that
+    /// keeps yielding live updates retains at most this many yielded transactions.
+    pub(crate) max_yielded: usize,
+    /// Whether a live update replaced a transaction already in `all`, which can leave a stale
+    /// copy of it in `independent`.
+    pub(crate) replaced: bool,
     /// Transactions that can be executed right away: these have the expected nonce.
     ///
     /// Once an `independent` transaction with the nonce `N` is returned, it unlocks `N+1`, which
@@ -134,7 +146,18 @@ impl<T: TransactionOrdering> BestTransactions<T> {
     /// Note: for a transaction with nonce higher than the current on chain nonce this will always
     /// return an ancestor since all transactions in this pool are gapless.
     pub(crate) fn ancestor(&self, id: &TransactionId) -> Option<&PendingTransaction<T>> {
-        self.all.get(&id.unchecked_ancestor()?)
+        self.get(&id.unchecked_ancestor()?)
+    }
+
+    /// Returns a transaction from `all` that has not been yielded yet.
+    fn get(&self, id: &TransactionId) -> Option<&PendingTransaction<T>> {
+        self.all.get(id).filter(|_| !self.yielded.contains(id))
+    }
+
+    /// Inserts a transaction into `all`, replacing any yielded entry with the same id.
+    fn insert(&mut self, id: TransactionId, tx: PendingTransaction<T>) {
+        self.yielded.remove(&id);
+        self.replaced |= self.all.insert(id, tx).is_some();
     }
 
     /// Non-blocking read on the new pending transactions subscription channel
@@ -172,9 +195,24 @@ impl<T: TransactionOrdering> BestTransactions<T> {
     /// Removes the currently best independent transaction from the independent set and the total
     /// set.
     fn pop_best(&mut self) -> Option<PendingTransaction<T>> {
-        self.independent.pop_last().inspect(|best| {
-            self.all.remove(best.transaction.id());
-        })
+        loop {
+            let best = self.independent.pop_last()?;
+            let id = *best.transaction.id();
+            // After a replacement, an entry whose id is no longer live (already yielded, possibly
+            // compacted out of `all`) is a stale copy, e.g. the snapshot entry of a transaction
+            // that was replaced and yielded through a live update. Skip it so it is neither
+            // yielded twice nor tombstoned outside `all`.
+            if self.replaced && self.get(&id).is_none() {
+                continue
+            }
+            self.yielded.insert(id);
+            if self.yielded.len() > self.max_yielded {
+                for id in self.yielded.drain() {
+                    self.all.remove(&id);
+                }
+            }
+            return Some(best)
+        }
     }
 
     /// Checks for new transactions that have come into the `PendingPool` after this iterator was
@@ -190,11 +228,11 @@ impl<T: TransactionOrdering> BestTransactions<T> {
                         if self.ancestor(&tx_id).is_none() {
                             self.independent.insert(tx.clone());
                         }
-                        self.all.insert(tx_id, tx);
+                        self.insert(tx_id, tx);
                     }
                     IncomingTransaction::Stash(tx) => {
                         let tx_id = *tx.transaction.id();
-                        self.all.insert(tx_id, tx);
+                        self.insert(tx_id, tx);
                     }
                 }
             } else {
@@ -225,7 +263,7 @@ impl<T: TransactionOrdering> BestTransactions<T> {
             }
 
             // Insert transactions that just got unlocked.
-            if let Some(unlocked) = self.all.get(&best.unlocks()) {
+            if let Some(unlocked) = self.get(&best.unlocks()) {
                 self.independent.insert(unlocked.clone());
             }
 
@@ -306,7 +344,7 @@ impl<T: TransactionOrdering> Iterator for BestTransactions<T> {
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
-        (0, self.new_transaction_receiver.is_none().then_some(self.all.len()))
+        (0, self.new_transaction_receiver.is_none().then_some(self.all.len() - self.yielded.len()))
     }
 }
 
@@ -857,6 +895,134 @@ mod tests {
         // Verify that the new transaction has been added to the 'independent' set
         assert_eq!(best.independent.len(), 2);
         assert!(best.independent.contains(&pending_tx));
+    }
+
+    #[test]
+    fn descendant_arriving_after_its_yielded_ancestor_is_independent() {
+        let mut pool = PendingPool::new(MockOrdering::default());
+        let mut f = MockTransactionFactory::default();
+        let parent = f.validated(MockTransaction::eip1559().rng_hash().with_nonce(0));
+        pool.add_transaction(Arc::new(parent.clone()), 0);
+
+        let mut best = pool.best();
+        let (tx_sender, tx_receiver) =
+            tokio::sync::broadcast::channel::<PendingTransaction<MockOrdering>>(10);
+        best.new_transaction_receiver = Some(tx_receiver);
+        assert_eq!(best.next().unwrap().id(), parent.id());
+
+        let child = f.validated(parent.transaction.rng_hash().with_nonce(1));
+        tx_sender
+            .send(PendingTransaction {
+                submission_id: 1,
+                transaction: Arc::new(child.clone()),
+                priority: Priority::Value(0),
+            })
+            .unwrap();
+        assert_eq!(best.next().unwrap().id(), child.id());
+        assert!(best.next().is_none());
+    }
+
+    #[test]
+    fn replaced_snapshot_transaction_is_yielded_once() {
+        let mut pool = PendingPool::new(MockOrdering::default());
+        let mut f = MockTransactionFactory::default();
+        let original = f.validated(
+            MockTransaction::eip1559()
+                .rng_hash()
+                .with_nonce(0)
+                .with_priority_fee(100)
+                .with_max_fee(100),
+        );
+        pool.add_transaction(Arc::new(original.clone()), 0);
+
+        let mut best = pool.best();
+        let (tx_sender, tx_receiver) =
+            tokio::sync::broadcast::channel::<PendingTransaction<MockOrdering>>(10);
+        best.new_transaction_receiver = Some(tx_receiver);
+
+        // Before anything is yielded, the snapshot's transaction is replaced at a higher priority
+        // and an unrelated transaction arrives. The original's snapshot entry is now stale.
+        let replacement = f.validated(original.transaction.rng_hash());
+        let other = f.validated(MockTransaction::eip1559().rng_hash().with_nonce(0));
+        for (submission_id, tx, priority) in
+            [(1, replacement.clone(), 300), (2, other.clone(), 200)]
+        {
+            tx_sender
+                .send(PendingTransaction {
+                    submission_id,
+                    transaction: Arc::new(tx),
+                    priority: Priority::Value(priority),
+                })
+                .unwrap();
+        }
+
+        let yielded: Vec<_> = std::iter::from_fn(|| best.next()).map(|tx| *tx.hash()).collect();
+        // Tombstones only ever name transactions still in `all`, so `size_hint` cannot underflow.
+        assert!(best.yielded.iter().all(|id| best.all.contains_key(id)));
+        let _ = best.size_hint();
+        // The stale original is skipped rather than yielded a second time.
+        assert_eq!(yielded, vec![*replacement.hash(), *other.hash()]);
+    }
+
+    #[test]
+    fn yielded_live_updates_do_not_accumulate() {
+        let mut pool = PendingPool::new(MockOrdering::default());
+        let mut f = MockTransactionFactory::default();
+        let first = f.validated(MockTransaction::eip1559().rng_hash());
+        pool.add_transaction(Arc::new(first), 0);
+
+        let mut best = pool.best();
+        let (tx_sender, tx_receiver) =
+            tokio::sync::broadcast::channel::<PendingTransaction<MockOrdering>>(10);
+        best.new_transaction_receiver = Some(tx_receiver);
+        best.allow_updates_out_of_order();
+        assert!(best.next().is_some());
+
+        for submission_id in 1..=5 {
+            let tx = f.validated(MockTransaction::eip1559().rng_hash());
+            tx_sender
+                .send(PendingTransaction {
+                    submission_id,
+                    transaction: Arc::new(tx),
+                    priority: Priority::Value(0),
+                })
+                .unwrap();
+            assert!(best.next().is_some());
+            // Yielded transactions are retained up to the snapshot size, one here.
+            assert!(best.yielded.len() <= 1);
+            assert!(best.all.len() <= 1);
+        }
+    }
+
+    #[test]
+    fn re_added_yielded_transaction_blocks_its_descendant() {
+        let mut pool = PendingPool::new(MockOrdering::default());
+        let mut f = MockTransactionFactory::default();
+        let parent = f.validated(MockTransaction::eip1559().rng_hash().with_nonce(0));
+        pool.add_transaction(Arc::new(parent.clone()), 0);
+
+        let mut best = pool.best();
+        let (tx_sender, tx_receiver) =
+            tokio::sync::broadcast::channel::<PendingTransaction<MockOrdering>>(10);
+        best.new_transaction_receiver = Some(tx_receiver);
+        assert_eq!(best.next().unwrap().id(), parent.id());
+
+        // A replacement with the yielded id is stashed (higher priority), so it is tracked again
+        // and its descendant must wait behind it rather than becoming independent.
+        let replacement = f.validated(parent.transaction.clone().rng_hash());
+        let child = f.validated(parent.transaction.rng_hash().with_nonce(1));
+        for (submission_id, tx, priority) in [(1, replacement, 1_000), (2, child.clone(), 0)] {
+            tx_sender
+                .send(PendingTransaction {
+                    submission_id,
+                    transaction: Arc::new(tx),
+                    priority: Priority::Value(priority),
+                })
+                .unwrap();
+        }
+        best.add_new_transactions();
+        assert!(best.all.contains_key(child.id()));
+        assert!(!best.independent.iter().any(|tx| tx.transaction.id() == child.id()));
     }
 
     #[test]
