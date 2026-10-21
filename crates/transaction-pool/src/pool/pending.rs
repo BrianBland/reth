@@ -3,7 +3,7 @@
 use crate::{
     identifier::{SenderId, TransactionId},
     pool::{
-        best::{BestTransactions, BestTransactionsWithFees},
+        best::{BestTransactions, BestTransactionsWithFees, IndependentTransactions},
         size::SizeTracker,
     },
     Priority, SubPoolLimit, TransactionOrdering, ValidPoolTransaction,
@@ -107,7 +107,9 @@ impl<T: TransactionOrdering> PendingPool<T> {
             yielded: Default::default(),
             max_yielded: self.by_id.len(),
             replaced: false,
-            independent: self.independent_transactions.values().cloned().collect(),
+            independent: IndependentTransactions::new(
+                self.independent_transactions.values().cloned().collect(),
+            ),
             invalid: Default::default(),
             new_transaction_receiver: Some(self.new_transaction_notifier.subscribe()),
             last_priority: None,
